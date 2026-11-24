@@ -39,10 +39,13 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSPopoverDeleg
         item.button?.action = #selector(togglePopover)
         item.button?.imagePosition = .imageOnly
         popover.delegate = self
-        popover.behavior = .transient
+        // Let the button handle its own click before any outside-click dismissal.
+        popover.behavior = .applicationDefined
         // A status item can be clicked again before AppKit's close animation finishes.
         popover.animates = false
-        popover.contentViewController = NSHostingController(rootView: QuotaPanel(model: model))
+        popover.contentViewController = NSHostingController(rootView: QuotaPanel(model: model).onExitCommand { [weak self] in
+            self?.popover.close()
+        })
         subscription = model.$reports.sink { [weak self] reports in
             self?.updateIcon(reports)
         }
@@ -75,17 +78,26 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSPopoverDeleg
         let mouseDown: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: mouseDown) { [weak self] event in
             guard let self, self.popover.isShown else { return event }
-            if let window = event.window,
-               window === self.popover.contentViewController?.view.window
-                || window === self.statusItem?.button?.window {
-                return event
-            }
-            self.popover.close()
+            let location = event.window?.convertPoint(toScreen: event.locationInWindow)
+                ?? event.locationInWindow
+            self.dismissPopoverIfOutside(at: location)
             return event
         }
-        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: mouseDown) { [weak self] _ in
-            self?.popover.close()
+        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: mouseDown) { [weak self] event in
+            self?.dismissPopoverIfOutside(at: event.locationInWindow)
         }
+    }
+
+    private func dismissPopoverIfOutside(at location: NSPoint) {
+        guard popover.isShown else { return }
+        if let button = statusItem?.button, let window = button.window,
+           window.convertToScreen(button.convert(button.bounds, to: nil)).contains(location) {
+            return
+        }
+        if popover.contentViewController?.view.window?.frame.contains(location) == true {
+            return
+        }
+        popover.close()
     }
 
     private func updateIcon(_ reports: [Provider: Report]) {
