@@ -16,6 +16,13 @@ final class StatusBarController: NSObject, NSApplicationDelegate {
     private let popover = NSPopover()
     private var statusItem: NSStatusItem?
     private var subscription: AnyCancellable?
+    private var displayedRings: [RingReading]?
+
+    private struct RingReading: Equatable {
+        let provider: Provider
+        let remaining: Int?
+        let stale: Bool
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: 66)
@@ -24,6 +31,8 @@ final class StatusBarController: NSObject, NSApplicationDelegate {
         item.button?.action = #selector(togglePopover)
         item.button?.imagePosition = .imageOnly
         popover.behavior = .transient
+        // A status item can be clicked again before AppKit's close animation finishes.
+        popover.animates = false
         popover.contentViewController = NSHostingController(rootView: QuotaPanel(model: model))
         subscription = model.$reports.sink { [weak self] reports in
             self?.updateIcon(reports)
@@ -33,28 +42,37 @@ final class StatusBarController: NSObject, NSApplicationDelegate {
     @objc private func togglePopover() {
         guard let button = statusItem?.button else { return }
         if popover.isShown {
-            popover.performClose(nil)
+            popover.close()
         } else {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
     }
 
     private func updateIcon(_ reports: [Provider: Report]) {
+        let readings = Provider.allCases.map { provider in
+            let report = reports[provider]
+            return RingReading(
+                provider: provider,
+                remaining: report?.remaining,
+                stale: report?.remaining != nil && report?.problem != nil
+            )
+        }
+        guard displayedRings != readings else { return }
+        displayedRings = readings
+
         let renderer = ImageRenderer(content: HStack(spacing: 4) {
-            ForEach(Provider.allCases, id: \.self) { provider in
-                let report = reports[provider]
-                QuotaRing(provider: provider, remaining: report?.remaining, stale: report?.problem != nil)
+            ForEach(readings, id: \.provider) { reading in
+                QuotaRing(provider: reading.provider, remaining: reading.remaining, stale: reading.stale)
             }
         })
         renderer.scale = 3
         let image = renderer.nsImage
         image?.size = NSSize(width: 62, height: 18)
         image?.isTemplate = false
-        let description = Provider.allCases.map { provider in
-            let report = reports[provider]
-            let value = report?.remaining.map { "\($0)% left" } ?? "unavailable"
-            let freshness = report?.remaining != nil && report?.problem != nil ? ", last reading" : ""
-            return "\(provider.name) \(value)\(freshness)"
+        let description = readings.map { reading in
+            let value = reading.remaining.map { "\($0)% left" } ?? "unavailable"
+            let freshness = reading.stale ? ", last reading" : ""
+            return "\(reading.provider.name) \(value)\(freshness)"
         }.joined(separator: " · ")
         image?.accessibilityDescription = description
         statusItem?.button?.image = image
@@ -135,6 +153,12 @@ private struct QuotaPanel: View {
     @ObservedObject var model: QuotaModel
 
     var body: some View {
+        TimelineView(.everyMinute) { context in
+            panel(now: max(context.date, .now))
+        }
+    }
+
+    private func panel(now: Date) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -152,7 +176,7 @@ private struct QuotaPanel: View {
 
             ForEach(Provider.allCases, id: \.self) { provider in
                 Divider()
-                providerSection(provider)
+                providerSection(provider, now: now)
             }
 
             Divider()
@@ -179,7 +203,7 @@ private struct QuotaPanel: View {
         return "in <1m"
     }
 
-    private func providerSection(_ provider: Provider) -> some View {
+    private func providerSection(_ provider: Provider, now: Date) -> some View {
         let report = model.reports[provider]
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 7) {
@@ -194,17 +218,25 @@ private struct QuotaPanel: View {
                         Spacer()
                         Text("\(remaining)% left").monospacedDigit().fontWeight(.medium)
                     }
-                    ProgressView(value: Double(remaining), total: 100)
-                        .tint(provider.tint)
-                        .accessibilityLabel("\(lane.title) quota remaining")
-                    if let date = lane.window.reset {
-                        TimelineView(.periodic(from: .now, by: 60)) { context in
-                            let dateLabel = date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute())
-                            Text("Resets \(dateLabel) · \(countdown(to: date, from: context.date))")
-                                .font(.caption)
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
+                    GeometryReader { geometry in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(provider.tint.opacity(0.16))
+                            if remaining > 0 {
+                                Capsule()
+                                    .fill(provider.tint)
+                                    .frame(width: geometry.size.width * CGFloat(remaining) / 100)
+                            }
                         }
+                    }
+                    .frame(height: 5)
+                    .transaction { $0.animation = nil }
+                    .accessibilityHidden(true)
+                    if let date = lane.window.reset {
+                        let dateLabel = date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute())
+                        Text("Resets \(dateLabel) · \(countdown(to: date, from: now))")
+                            .font(.caption)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
                     } else if let description = lane.window.resetDescription {
                         Text(description).font(.caption).foregroundStyle(.secondary)
                     }
