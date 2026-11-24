@@ -23,6 +23,8 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSPopoverDeleg
     private var displayedRings: [RingReading]?
     private var coloredIcon: NSImage?
     private var selectedIcon: NSImage?
+    private var localClickMonitor: Any?
+    private var globalClickMonitor: Any?
 
     private struct RingReading: Equatable {
         let provider: Provider
@@ -53,6 +55,7 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSPopoverDeleg
         } else {
             model.reloadLoginItemStatus()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            if popover.isShown { monitorOutsideClicks() }
         }
     }
 
@@ -62,6 +65,27 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSPopoverDeleg
 
     func popoverDidClose(_ notification: Notification) {
         statusItem?.button?.image = coloredIcon
+        if let localClickMonitor { NSEvent.removeMonitor(localClickMonitor) }
+        if let globalClickMonitor { NSEvent.removeMonitor(globalClickMonitor) }
+        localClickMonitor = nil
+        globalClickMonitor = nil
+    }
+
+    private func monitorOutsideClicks() {
+        let mouseDown: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: mouseDown) { [weak self] event in
+            guard let self, self.popover.isShown else { return event }
+            if let window = event.window,
+               window === self.popover.contentViewController?.view.window
+                || window === self.statusItem?.button?.window {
+                return event
+            }
+            self.popover.close()
+            return event
+        }
+        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: mouseDown) { [weak self] _ in
+            self?.popover.close()
+        }
     }
 
     private func updateIcon(_ reports: [Provider: Report]) {
@@ -194,6 +218,7 @@ final class QuotaModel: ObservableObject {
                     var report = result
                     if let previous = reports[provider], result.problem != nil {
                         report.lanes = previous.lanes
+                        report.sessionLane = previous.sessionLane
                         report.updatedAt = previous.updatedAt
                     }
                     reports[provider] = report
@@ -230,6 +255,7 @@ final class QuotaModel: ObservableObject {
 
 private struct QuotaPanel: View {
     @ObservedObject var model: QuotaModel
+    @State private var period = QuotaPeriod.week
 
     var body: some View {
         TimelineView(.everyMinute) { context in
@@ -242,7 +268,7 @@ private struct QuotaPanel: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Quota Bar").font(.headline)
-                    Text(model.refreshing ? "Refreshing quotas…" : "7-day quotas")
+                    Text(model.refreshing ? "Refreshing quotas…" : period == .week ? "7-day quotas" : "5-hour quotas")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -257,6 +283,14 @@ private struct QuotaPanel: View {
                 .disabled(model.refreshing)
                 .help("Refresh quota readings")
             }
+
+            Picker("Quota period", selection: $period) {
+                ForEach(QuotaPeriod.allCases, id: \.self) { period in
+                    Text(period.rawValue).tag(period)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
 
             ForEach(Provider.allCases, id: \.self) { provider in
                 Divider()
@@ -316,14 +350,14 @@ private struct QuotaPanel: View {
     }
 
     private func timeBar(reset: Date, now: Date) -> some View {
-        let daysLeft = min(max(reset.timeIntervalSince(now) / 86_400, 0), 7)
+        let segmentsLeft = reset.timeIntervalSince(now) / period.segmentSeconds
         return VStack(alignment: .leading, spacing: 3) {
             Text("Time left")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack(spacing: 3) {
-                ForEach(0..<7) { day in
-                    let fill = min(max(daysLeft - Double(day), 0), 1)
+                ForEach(0..<period.segmentCount, id: \.self) { segment in
+                    let fill = min(max(segmentsLeft - Double(segment), 0), 1)
                     GeometryReader { geometry in
                         ZStack(alignment: .leading) {
                             RoundedRectangle(cornerRadius: 1).fill(.secondary.opacity(0.15))
@@ -345,12 +379,14 @@ private struct QuotaPanel: View {
 
     private func providerSection(_ provider: Provider, now: Date) -> some View {
         let report = model.reports[provider]
+        let lanes = report?.lanes(for: period) ?? []
+        let remaining = lanes.map(\.window.remaining).min()
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                QuotaRing(provider: provider, remaining: report?.remaining, stale: report?.problem != nil)
+                QuotaRing(provider: provider, remaining: remaining, stale: remaining != nil && report?.problem != nil)
                 Text(provider.name).font(.subheadline.weight(.semibold))
             }
-            ForEach(report?.lanes ?? [], id: \.title) { lane in
+            ForEach(lanes, id: \.title) { lane in
                 let remaining = lane.window.remaining
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
@@ -380,8 +416,11 @@ private struct QuotaPanel: View {
                             .font(.caption)
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
-                    } else if let description = lane.window.resetDescription {
+                    } else if let description = lane.window.resetDescription, !description.isEmpty {
                         Text(description).font(.caption).foregroundStyle(.secondary)
+                    } else if period == .session, lane.window.resetsAt == nil, lane.window.usedPercent == 0 {
+                        Text("Starts with your first message")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 .font(.callout)
@@ -391,12 +430,14 @@ private struct QuotaPanel: View {
             }
             if let problem = report?.problem {
                 Text(problem).font(.caption).foregroundStyle(.secondary)
-                if let date = report?.updatedAt {
+                if !lanes.isEmpty, let date = report?.updatedAt {
                     Text("Last reading \(date.formatted(date: .abbreviated, time: .shortened))")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             } else if report == nil {
                 Text("Checking quota…").font(.caption).foregroundStyle(.secondary)
+            } else if lanes.isEmpty {
+                Text(period.unavailable).font(.caption).foregroundStyle(.secondary)
             }
         }
     }

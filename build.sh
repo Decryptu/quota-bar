@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")"
-swift build -c release
-binary_directory="$(swift build -c release --show-bin-path)"
+swift build -c release "$@"
+binary_directory="$(swift build -c release "$@" --show-bin-path)"
 app="dist/Quota Bar.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
@@ -17,8 +17,8 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
     <key>CFBundleExecutable</key><string>QuotaBar</string>
     <key>CFBundleIconFile</key><string>AppIcon.icns</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.0.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>1.1.0</string>
+    <key>CFBundleVersion</key><string>2</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
 </dict>

@@ -38,6 +38,17 @@ struct Window: Decodable, Sendable {
     }
 }
 
+enum QuotaPeriod: String, CaseIterable {
+    case week = "7d"
+    case session = "5h"
+
+    var segmentCount: Int { self == .week ? 7 : 5 }
+    var segmentSeconds: Double { self == .week ? 86_400 : 3_600 }
+    var unavailable: String {
+        self == .week ? "Weekly quota unavailable." : "Five-hour quota unavailable."
+    }
+}
+
 struct Lane: Sendable {
     let title: String
     let window: Window
@@ -45,11 +56,19 @@ struct Lane: Sendable {
 
 struct Report: Sendable {
     var lanes: [Lane] = []
+    var sessionLane: Lane?
     var problem: String?
     var updatedAt: Date?
     var idleSession = false
     var activeSession = false
     var remaining: Int? { lanes.map(\.window.remaining).min() }
+
+    func lanes(for period: QuotaPeriod) -> [Lane] {
+        switch period {
+        case .week: lanes
+        case .session: sessionLane.map { [$0] } ?? []
+        }
+    }
 }
 
 private struct Payload: Decodable {
@@ -94,26 +113,37 @@ enum QuotaReader {
             lanes = weekly.map { [Lane(title: "All models", window: $0)] } ?? []
         }
         let session: Window?
+        if provider == .antigravity {
+            session = usage.extraRateWindows?.first {
+                $0.id == "antigravity-quota-summary-gemini-5h"
+                    && $0.usageKnown != false
+                    && $0.window?.windowMinutes == 300
+            }?.window
+        } else {
+            session = [usage.primary, usage.secondary].compactMap { $0 }
+                .first { $0.windowMinutes == 300 }
+        }
+
+        // Warm-up still requires a source that can reliably identify an idle session.
+        let wakeSession: Window?
         switch (provider, payload.source) {
         case (.claude, "oauth"), (.claude, "claude"), (.codex, "oauth"):
-            session = usage.primary
+            wakeSession = usage.primary
         case (.antigravity, "cli"):
-            session = usage.extraRateWindows?.first {
-                $0.id == "antigravity-quota-summary-gemini-5h" && $0.usageKnown != false
-            }?.window
+            wakeSession = session
         default:
-            session = nil
+            wakeSession = nil
         }
-        let idleSession = session?.windowMinutes == 300
-            && session?.usedPercent == 0
-            && session?.resetsAt == nil
-            && session?.resetDescription?.isEmpty != false
+        let idleSession = wakeSession?.windowMinutes == 300
+            && wakeSession?.usedPercent == 0
+            && wakeSession?.resetsAt == nil
+            && wakeSession?.resetDescription?.isEmpty != false
         return Report(
             lanes: lanes,
-            problem: lanes.isEmpty ? "Weekly quota unavailable." : nil,
-            updatedAt: lanes.isEmpty ? nil : Date(),
+            sessionLane: session.map { Lane(title: provider == .antigravity ? "Gemini" : "All models", window: $0) },
+            updatedAt: lanes.isEmpty && session == nil ? nil : Date(),
             idleSession: idleSession && !lanes.isEmpty && (lanes.first?.window.usedPercent ?? 100) < 100,
-            activeSession: session?.reset.map { $0 > Date() } ?? false
+            activeSession: wakeSession?.reset.map { $0 > Date() } ?? false
         )
     }
 

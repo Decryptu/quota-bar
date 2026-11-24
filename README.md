@@ -1,6 +1,6 @@
 # Quota Bar
 
-Quota Bar puts the weekly limits for Claude, Codex, and Google Antigravity (Gemini) in your Mac menu bar. Click the rings to see how much quota and time remain, and when each limit resets.
+Quota Bar puts the weekly limits for Claude, Codex, and Google Antigravity (Gemini) in your Mac menu bar. Click the rings and choose **7d** or **5h** to see how much quota and time remain, and when each limit resets.
 
 <img src="docs/quota-bar-preview.png" width="488" alt="Quota Bar menu showing weekly quota and reset times for Claude, Codex, and Antigravity.">
 
