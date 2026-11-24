@@ -240,39 +240,43 @@ private struct QuotaPanel: View {
                 providerSection(provider, now: now)
             }
 
-            Divider()
-            Toggle("Auto-wake five-hour quotas", isOn: Binding(
-                get: { model.autoWake },
-                set: { model.setAutoWake($0) }
-            ))
+            VStack(alignment: .leading, spacing: 10) {
+                Divider()
+                Toggle("Quota Warm-up", isOn: Binding(
+                    get: { model.autoWake },
+                    set: { model.setAutoWake($0) }
+                ))
+                .frame(minHeight: 20)
+                .help("Sends one tiny prompt when a provider reports an idle five-hour window. Uses plan quota.")
+
+                HStack {
+                    Toggle("Open at Login", isOn: Binding(
+                        get: { model.opensAtLogin },
+                        set: { model.setOpensAtLogin($0) }
+                    ))
+                    Spacer()
+                    Button("Quit") { NSApplication.shared.terminate(nil) }
+                        .keyboardShortcut("q")
+                }
+                .frame(minHeight: 20)
+
+                if model.autoWake {
+                    Text("Sends one tiny prompt per idle five-hour window using plan quota.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if let error = model.loginItemError {
+                    Text(error).font(.caption).foregroundStyle(.secondary)
+                }
+                if model.loginItemStatus == .requiresApproval {
+                    Button("Approve in System Settings") {
+                        SMAppService.openSystemSettingsLoginItems()
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                }
+            }
             .toggleStyle(.checkbox)
             .controlSize(.small)
-            .help("Sends one tiny prompt when a provider reports an idle five-hour window. Uses plan quota.")
-            if model.autoWake {
-                Text("Sends one tiny prompt per idle window using plan quota.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            HStack {
-                Toggle("Open at Login", isOn: Binding(
-                    get: { model.opensAtLogin },
-                    set: { model.setOpensAtLogin($0) }
-                ))
-                .toggleStyle(.checkbox)
-                .controlSize(.small)
-                Spacer()
-                Button("Quit") { NSApplication.shared.terminate(nil) }
-                    .keyboardShortcut("q")
-            }
-            if let error = model.loginItemError {
-                Text(error).font(.caption).foregroundStyle(.secondary)
-            }
-            if model.loginItemStatus == .requiresApproval {
-                Button("Approve in System Settings") {
-                    SMAppService.openSystemSettingsLoginItems()
-                }
-                .buttonStyle(.link)
-                .font(.caption)
-            }
         }
         .padding(16)
         .frame(width: 344)
