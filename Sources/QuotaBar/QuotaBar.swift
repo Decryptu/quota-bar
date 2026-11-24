@@ -205,7 +205,7 @@ private struct QuotaPanel: View {
 
     private func timeBar(reset: Date, now: Date) -> some View {
         let daysLeft = min(max(reset.timeIntervalSince(now) / 86_400, 0), 7)
-        return HStack(spacing: 8) {
+        return VStack(alignment: .leading, spacing: 3) {
             Text("Time left")
                 .font(.caption)
                 .foregroundStyle(.secondary)
