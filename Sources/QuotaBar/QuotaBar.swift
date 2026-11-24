@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import ServiceManagement
 
 @main
 struct QuotaBar: App {
@@ -44,6 +45,7 @@ final class StatusBarController: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.close()
         } else {
+            model.reloadLoginItemStatus()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
     }
@@ -118,7 +120,34 @@ private extension Provider {
 final class QuotaModel: ObservableObject {
     @Published private(set) var reports: [Provider: Report] = [:]
     @Published private(set) var refreshing = false
+    @Published private(set) var loginItemStatus = SMAppService.mainApp.status
+    @Published private(set) var loginItemError: String?
     private var timer: Timer?
+
+    var opensAtLogin: Bool {
+        loginItemStatus == .enabled || loginItemStatus == .requiresApproval
+    }
+
+    func reloadLoginItemStatus() {
+        let status = SMAppService.mainApp.status
+        if loginItemStatus != status { loginItemStatus = status }
+    }
+
+    func setOpensAtLogin(_ enabled: Bool) {
+        loginItemError = nil
+        defer { reloadLoginItemStatus() }
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+        } catch {
+            loginItemError = enabled
+                ? "Couldn’t turn on Open at Login."
+                : "Couldn’t turn off Open at Login."
+        }
+    }
 
     init() {
         refresh()
@@ -181,11 +210,25 @@ private struct QuotaPanel: View {
 
             Divider()
             HStack {
-                Text(model.refreshing ? "Refreshing…" : "Refreshes every 5 minutes")
-                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Open at Login", isOn: Binding(
+                    get: { model.opensAtLogin },
+                    set: { model.setOpensAtLogin($0) }
+                ))
+                .toggleStyle(.checkbox)
+                .controlSize(.small)
                 Spacer()
                 Button("Quit") { NSApplication.shared.terminate(nil) }
                     .keyboardShortcut("q")
+            }
+            if let error = model.loginItemError {
+                Text(error).font(.caption).foregroundStyle(.secondary)
+            }
+            if model.loginItemStatus == .requiresApproval {
+                Button("Approve in System Settings") {
+                    SMAppService.openSystemSettingsLoginItems()
+                }
+                .buttonStyle(.link)
+                .font(.caption)
             }
         }
         .padding(16)

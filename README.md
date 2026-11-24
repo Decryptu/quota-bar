@@ -4,6 +4,8 @@ A native macOS menu bar app for the seven-day quotas of Claude, Codex, and Googl
 
 The menu bar shows three quota rings in order: clay for Claude, blue for Codex, and green for Antigravity. Hover for exact percentages or click for progress bars, reset dates, live countdowns, and manual refresh. The Antigravity ring and panel show its Gemini weekly quota. A dimmed arc marks a reading retained after a refresh failed.
 
+Enable **Open at Login** in the menu to start Quota Bar automatically when you sign in to macOS.
+
 ## Run locally
 
 Requires macOS 14 or later, Swift 5.9 or later, and the current CodexBar quota helper.
