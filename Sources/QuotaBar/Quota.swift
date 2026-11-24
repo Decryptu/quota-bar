@@ -47,6 +47,8 @@ struct Report: Sendable {
     var lanes: [Lane] = []
     var problem: String?
     var updatedAt: Date?
+    var idleSession = false
+    var activeSession = false
     var remaining: Int? { lanes.map(\.window.remaining).min() }
 }
 
@@ -65,6 +67,7 @@ private struct Payload: Decodable {
 
     let provider: String
     let usage: Usage?
+    let source: String?
 }
 
 enum QuotaReader {
@@ -72,7 +75,8 @@ enum QuotaReader {
         let decoder = JSONDecoder()
         let payloads = (try? decoder.decode([Payload].self, from: data))
             ?? (try? decoder.decode(Payload.self, from: data)).map { [$0] }
-        guard let usage = payloads?.first(where: { $0.provider == provider.rawValue })?.usage else {
+        guard let payload = payloads?.first(where: { $0.provider == provider.rawValue }),
+              let usage = payload.usage else {
             return Report(problem: "Couldn’t fetch quota. Check sign-in and connection.")
         }
         let lanes: [Lane]
@@ -89,10 +93,27 @@ enum QuotaReader {
                 ?? (provider == .claude && usage.secondary?.windowMinutes == nil ? usage.secondary : nil)
             lanes = weekly.map { [Lane(title: "All models", window: $0)] } ?? []
         }
+        let session: Window?
+        switch (provider, payload.source) {
+        case (.claude, "oauth"), (.claude, "claude"), (.codex, "oauth"):
+            session = usage.primary
+        case (.antigravity, "cli"):
+            session = usage.extraRateWindows?.first {
+                $0.id == "antigravity-quota-summary-gemini-5h" && $0.usageKnown != false
+            }?.window
+        default:
+            session = nil
+        }
+        let idleSession = session?.windowMinutes == 300
+            && session?.usedPercent == 0
+            && session?.resetsAt == nil
+            && session?.resetDescription?.isEmpty != false
         return Report(
             lanes: lanes,
             problem: lanes.isEmpty ? "Weekly quota unavailable." : nil,
-            updatedAt: lanes.isEmpty ? nil : Date()
+            updatedAt: lanes.isEmpty ? nil : Date(),
+            idleSession: idleSession && !lanes.isEmpty && (lanes.first?.window.usedPercent ?? 100) < 100,
+            activeSession: session?.reset.map { $0 > Date() } ?? false
         )
     }
 
@@ -126,7 +147,9 @@ enum QuotaReader {
                 defer { timeout.cancel() }
                 let data = output.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
-                return try decode(data, provider: provider)
+                var report = try decode(data, provider: provider)
+                if process.terminationStatus != 0 { report.idleSession = false }
+                return report
             } catch {
                 return Report(problem: "Couldn’t run the quota helper.")
             }

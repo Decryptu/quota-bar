@@ -122,7 +122,15 @@ final class QuotaModel: ObservableObject {
     @Published private(set) var refreshing = false
     @Published private(set) var loginItemStatus = SMAppService.mainApp.status
     @Published private(set) var loginItemError: String?
+    @Published private(set) var autoWake = UserDefaults.standard.bool(forKey: "autoWake")
+    @Published private(set) var wakeMessages: [Provider: String] = [:]
     private var timer: Timer?
+
+    func setAutoWake(_ enabled: Bool) {
+        autoWake = enabled
+        UserDefaults.standard.set(enabled, forKey: "autoWake")
+        if enabled { refresh() }
+    }
 
     var opensAtLogin: Bool {
         loginItemStatus == .enabled || loginItemStatus == .requiresApproval
@@ -171,11 +179,35 @@ final class QuotaModel: ObservableObject {
                         report.updatedAt = previous.updatedAt
                     }
                     reports[provider] = report
+                    if autoWake, result.idleSession,
+                       let checked = result.updatedAt, Date().timeIntervalSince(checked) < 30 {
+                        await wakeIfDue(provider)
+                    }
                 }
             }
             refreshing = false
         }
     }
+    private func wakeIfDue(_ provider: Provider) async {
+        let key = "lastWakeAttempt.\(provider.rawValue)"
+        let now = Date()
+        if let last = UserDefaults.standard.object(forKey: key) as? Date,
+           now.timeIntervalSince(last) < 5 * 3_600 { return }
+
+        UserDefaults.standard.set(now, forKey: key)
+        wakeMessages[provider] = "Starting five-hour window…"
+        if let problem = await QuotaWake.send(provider) {
+            wakeMessages[provider] = problem
+            return
+        }
+
+        let refreshed = await QuotaReader.fetch(provider)
+        if refreshed.problem == nil { reports[provider] = refreshed }
+        wakeMessages[provider] = refreshed.problem == nil && refreshed.activeSession
+            ? "Five-hour window started."
+            : "Warm-up sent. Waiting for a confirmed reset time."
+    }
+
 }
 
 private struct QuotaPanel: View {
@@ -209,6 +241,17 @@ private struct QuotaPanel: View {
             }
 
             Divider()
+            Toggle("Auto-wake five-hour quotas", isOn: Binding(
+                get: { model.autoWake },
+                set: { model.setAutoWake($0) }
+            ))
+            .toggleStyle(.checkbox)
+            .controlSize(.small)
+            .help("Sends one tiny prompt when a provider reports an idle five-hour window. Uses plan quota.")
+            if model.autoWake {
+                Text("Sends one tiny prompt per idle window using plan quota.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             HStack {
                 Toggle("Open at Login", isOn: Binding(
                     get: { model.opensAtLogin },
@@ -315,6 +358,9 @@ private struct QuotaPanel: View {
                     }
                 }
                 .font(.callout)
+            }
+            if model.autoWake, let message = model.wakeMessages[provider] {
+                Text(message).font(.caption).foregroundStyle(.secondary)
             }
             if let problem = report?.problem {
                 Text(problem).font(.caption).foregroundStyle(.secondary)
