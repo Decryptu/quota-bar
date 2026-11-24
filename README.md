@@ -2,6 +2,8 @@
 
 Quota Bar puts the weekly limits for Claude, Codex, and Google Antigravity (Gemini) in your Mac menu bar. Click the rings to see how much quota and time remain, and when each limit resets.
 
+<img src="docs/quota-bar-preview.png" width="488" alt="Quota Bar menu showing weekly quota and reset times for Claude, Codex, and Antigravity.">
+
 ## Install
 
 Requires macOS 14 or later. Download [QuotaBar-macOS.zip](https://github.com/Decryptu/quota-bar/releases/latest), unzip it, and move **Quota Bar.app** to Applications. The app is ad hoc signed and macOS may require approval in **System Settings → Privacy & Security** on first launch.
