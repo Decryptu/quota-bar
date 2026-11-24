@@ -77,15 +77,12 @@ enum QuotaReader {
         }
         let lanes: [Lane]
         if provider == .antigravity {
-            let pools = [
-                ("antigravity-quota-summary-gemini-weekly", "Gemini"),
-                ("antigravity-quota-summary-3p-weekly", "Claude and GPT")
-            ]
-            lanes = pools.compactMap { id, title in
-                let bucket = usage.extraRateWindows?.first { $0.id == id && $0.usageKnown != false }
-                guard let window = bucket?.window, window.windowMinutes == 10_080 else { return nil }
-                return Lane(title: title, window: window)
+            let gemini = usage.extraRateWindows?.first {
+                $0.id == "antigravity-quota-summary-gemini-weekly"
+                    && $0.usageKnown != false
+                    && $0.window?.windowMinutes == 10_080
             }
+            lanes = gemini?.window.map { [Lane(title: "Gemini", window: $0)] } ?? []
         } else {
             let windows = [usage.secondary, usage.primary].compactMap { $0 }
             let weekly = windows.first { $0.windowMinutes == 10_080 }

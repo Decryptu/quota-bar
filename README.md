@@ -2,7 +2,7 @@
 
 A native macOS menu bar app for the seven-day quotas of Claude, Codex, and Google Antigravity.
 
-The menu bar shows three quota rings in order: clay for Claude, blue for Codex, and green for Antigravity. Hover for exact percentages or click for progress bars, reset dates, live countdowns, and manual refresh. Antigravity shows both the Gemini and Claude/GPT pools in the panel, with the lower remaining percentage in its ring. A dimmed arc marks a reading retained after a refresh failed.
+The menu bar shows three quota rings in order: clay for Claude, blue for Codex, and green for Antigravity. Hover for exact percentages or click for progress bars, reset dates, live countdowns, and manual refresh. The Antigravity ring and panel show its Gemini weekly quota. A dimmed arc marks a reading retained after a refresh failed.
 
 ## Run locally
 
