@@ -249,6 +249,7 @@ private struct QuotaPanel: View {
                 Spacer()
                 Button { model.refresh() } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
+                        .labelStyle(.iconOnly)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -276,7 +277,7 @@ private struct QuotaPanel: View {
                         set: { model.setOpensAtLogin($0) }
                     ))
                     Spacer()
-                    Button("Quit Quota Bar") { NSApplication.shared.terminate(nil) }
+                    Button("Quit") { NSApplication.shared.terminate(nil) }
                         .buttonStyle(.bordered)
                         .keyboardShortcut("q")
                 }
