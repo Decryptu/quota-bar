@@ -203,6 +203,34 @@ private struct QuotaPanel: View {
         return "in <1m"
     }
 
+    private func timeBar(reset: Date, now: Date) -> some View {
+        let daysLeft = min(max(reset.timeIntervalSince(now) / 86_400, 0), 7)
+        return HStack(spacing: 8) {
+            Text("Time left")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 3) {
+                ForEach(0..<7) { day in
+                    let fill = min(max(daysLeft - Double(day), 0), 1)
+                    GeometryReader { geometry in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 1).fill(.secondary.opacity(0.15))
+                            if fill > 0 {
+                                Rectangle()
+                                    .fill(.secondary.opacity(0.65))
+                                    .frame(width: geometry.size.width * fill)
+                            }
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 1))
+                    }
+                }
+            }
+            .frame(height: 4)
+        }
+        .transaction { $0.disablesAnimations = true }
+        .accessibilityHidden(true)
+    }
+
     private func providerSection(_ provider: Provider, now: Date) -> some View {
         let report = model.reports[provider]
         return VStack(alignment: .leading, spacing: 8) {
@@ -216,7 +244,7 @@ private struct QuotaPanel: View {
                     HStack {
                         Text(lane.title).foregroundStyle(.secondary)
                         Spacer()
-                        Text("\(remaining)% left").monospacedDigit().fontWeight(.medium)
+                        Text("\(remaining)% quota left").monospacedDigit().fontWeight(.medium)
                     }
                     GeometryReader { geometry in
                         ZStack(alignment: .leading) {
@@ -232,6 +260,8 @@ private struct QuotaPanel: View {
                     .transaction { $0.animation = nil }
                     .accessibilityHidden(true)
                     if let date = lane.window.reset {
+                        timeBar(reset: date, now: now)
+                            .padding(.top, 2)
                         let dateLabel = date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute())
                         Text("Resets \(dateLabel) · \(countdown(to: date, from: now))")
                             .font(.caption)
