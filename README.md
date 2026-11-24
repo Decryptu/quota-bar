@@ -1,31 +1,26 @@
 # Quota Bar
 
-A native macOS menu bar app for the seven-day quotas of Claude, Codex, and Google Antigravity.
+Quota Bar puts the weekly limits for Claude, Codex, and Google Antigravity (Gemini) in your Mac menu bar. Click the rings to see how much quota and time remain, and when each limit resets.
 
-The menu bar shows three quota rings in order: clay for Claude, blue for Codex, and green for Antigravity. Hover for exact percentages or click for progress bars, reset dates, live countdowns, and manual refresh. The Antigravity ring and panel show its Gemini weekly quota. A dimmed arc marks a reading retained after a refresh failed.
+## Install
 
-Enable **Open at Login** in the menu to start Quota Bar automatically when you sign in to macOS.
+Requires macOS 14 or later. Download [QuotaBar-macOS.zip](https://github.com/Decryptu/quota-bar/releases/latest), unzip it, and move **Quota Bar.app** to Applications. The app is ad hoc signed and macOS may require approval in **System Settings → Privacy & Security** on first launch.
+
+Install the quota helper and, for Antigravity, its CLI:
+
+```sh
+brew install --cask codexbar
+brew install --cask antigravity-cli
+```
+
+Quota Bar reads usage from your existing sign-ins through the CodexBar CLI. Its menu bar app can stay closed. If Antigravity usage is missing, run `agy` in Terminal to sign in. Enable **Open at Login** in Quota Bar to start it automatically.
 
 ## Quota Warm-up
 
-Enable the checkbox in the menu to send one short arithmetic prompt after a fresh usage check shows an idle five-hour window with zero usage and no reset timestamp. The feature is off by default. It skips unknown windows, active windows, exhausted weekly pools, and unsupported usage sources. A saved cooldown limits each provider to one attempt per five hours, including after relaunch.
+Off by default. When a supported five-hour window is idle, Quota Bar can send a short prompt through the signed-in provider CLI to start the clock. The prompt counts toward your quota.
 
-Warm-ups use the signed-in CLIs and consume plan quota. Claude uses Haiku with session persistence off. Codex uses GPT-6 Luna on low effort in ephemeral mode. Antigravity uses Gemini 3.8 Flash on low effort with an isolated temporary CLI data directory. Google does not document an incognito switch for print mode. Quota Bar removes its own temporary files after the command finishes.
+If you use up the quota two hours after starting work, a five-hour window leaves three hours to wait. If the window started two hours before work, there's only one hour left. While that same window is active, the wait after reaching the limit is `5h - time since the window started`.
 
-## Run locally
+## Build
 
-Requires macOS 14 or later, Swift 5.9 or later, and the current CodexBar quota helper.
-
-```sh
-brew install --cask codexbar antigravity-cli
-./build.sh
-open "dist/Quota Bar.app"
-```
-
-Quota Bar polls the [CodexBar CLI](https://github.com/steipete/CodexBar/blob/main/docs/cli.md) every five minutes using the existing provider sign-ins. CodexBar's menu bar UI can stay closed. Quota Bar keeps the percentages and timestamps in memory. It delegates quota lookups to the helper. Warm-up prompts are sent only when Quota Warm-up is enabled.
-
-- **Claude** - CodexBar can use the Claude Code sign-in or an available browser session. If needed, run `claude` in Terminal and sign in.
-- **Codex** - CodexBar can use the existing Codex sign-in. If needed, run `codex login` in Terminal and sign in with ChatGPT.
-- **Antigravity** - The signed-in `agy` CLI supports background usage while the desktop app is closed. Run `agy` once and sign in if the existing session is unavailable.
-
-For setup details, see the CodexBar guides for [Claude](https://github.com/steipete/CodexBar/blob/main/docs/claude.md), [Codex](https://github.com/steipete/CodexBar/blob/main/docs/codex.md), and [Antigravity](https://github.com/steipete/CodexBar/blob/main/docs/antigravity.md).
+Run `./build.sh` to build `dist/Quota Bar.app`.
