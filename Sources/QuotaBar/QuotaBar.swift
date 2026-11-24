@@ -78,6 +78,9 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSPopoverDeleg
         let mouseDown: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: mouseDown) { [weak self] event in
             guard let self, self.popover.isShown else { return event }
+            if let window = event.window, window === self.statusItem?.button?.window {
+                return event
+            }
             let location = event.window?.convertPoint(toScreen: event.locationInWindow)
                 ?? event.locationInWindow
             self.dismissPopoverIfOutside(at: location)
@@ -90,9 +93,14 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSPopoverDeleg
 
     private func dismissPopoverIfOutside(at location: NSPoint) {
         guard popover.isShown else { return }
-        if let button = statusItem?.button, let window = button.window,
-           window.convertToScreen(button.convert(button.bounds, to: nil)).contains(location) {
-            return
+        if let button = statusItem?.button, let window = button.window {
+            let frame = window.convertToScreen(button.convert(button.bounds, to: nil))
+            // macOS routes clicks at the screen edge to the status item too.
+            let top = max(frame.maxY, window.screen?.frame.maxY ?? frame.maxY)
+            if location.x >= frame.minX, location.x < frame.maxX,
+               location.y >= frame.minY, location.y <= top {
+                return
+            }
         }
         if popover.contentViewController?.view.window?.frame.contains(location) == true {
             return
@@ -328,10 +336,6 @@ private struct QuotaPanel: View {
                         .keyboardShortcut("q")
                 }
 
-                if model.autoWake {
-                    Text("Sends one tiny prompt per idle five-hour window using plan quota.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
                 if let error = model.loginItemError {
                     Text(error).font(.caption).foregroundStyle(.secondary)
                 }
