@@ -3,21 +3,26 @@ import Combine
 import ServiceManagement
 
 @main
-struct QuotaBar: App {
-    @NSApplicationDelegateAdaptor(StatusBarController.self) private var statusBar
-
-    var body: some Scene {
-        Settings { EmptyView() }
+enum QuotaBar {
+    @MainActor
+    static func main() {
+        let app = NSApplication.shared
+        let controller = StatusBarController()
+        app.setActivationPolicy(.accessory)
+        app.delegate = controller
+        withExtendedLifetime(controller) { app.run() }
     }
 }
 
 @MainActor
-final class StatusBarController: NSObject, NSApplicationDelegate {
+final class StatusBarController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let model = QuotaModel()
     private let popover = NSPopover()
     private var statusItem: NSStatusItem?
     private var subscription: AnyCancellable?
     private var displayedRings: [RingReading]?
+    private var coloredIcon: NSImage?
+    private var selectedIcon: NSImage?
 
     private struct RingReading: Equatable {
         let provider: Provider
@@ -31,6 +36,7 @@ final class StatusBarController: NSObject, NSApplicationDelegate {
         item.button?.target = self
         item.button?.action = #selector(togglePopover)
         item.button?.imagePosition = .imageOnly
+        popover.delegate = self
         popover.behavior = .transient
         // A status item can be clicked again before AppKit's close animation finishes.
         popover.animates = false
@@ -48,6 +54,14 @@ final class StatusBarController: NSObject, NSApplicationDelegate {
             model.reloadLoginItemStatus()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
+    }
+
+    func popoverWillShow(_ notification: Notification) {
+        statusItem?.button?.image = selectedIcon
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        statusItem?.button?.image = coloredIcon
     }
 
     private func updateIcon(_ reports: [Provider: Report]) {
@@ -77,8 +91,12 @@ final class StatusBarController: NSObject, NSApplicationDelegate {
             return "\(reading.provider.name) \(value)\(freshness)"
         }.joined(separator: " · ")
         image?.accessibilityDescription = description
-        statusItem?.button?.image = image
+        coloredIcon = image
+        selectedIcon = image?.copy() as? NSImage
+        selectedIcon?.isTemplate = true
+        statusItem?.button?.image = popover.isShown ? selectedIcon : coloredIcon
         statusItem?.button?.toolTip = description
+        statusItem?.button?.setAccessibilityLabel(description)
     }
 }
 
@@ -220,19 +238,23 @@ private struct QuotaPanel: View {
     }
 
     private func panel(now: Date) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Quota Bar").font(.headline)
-                    Text("7-day quota remaining").font(.caption).foregroundStyle(.secondary)
+                    Text(model.refreshing ? "Refreshing quotas…" : "7-day quotas")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button { model.refresh() } label: {
-                    Image(systemName: "arrow.clockwise")
+                    Label("Refresh", systemImage: "arrow.clockwise")
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .keyboardShortcut("r")
                 .disabled(model.refreshing)
-                .help("Refresh quota")
-                .accessibilityLabel("Refresh quota")
+                .help("Refresh quota readings")
             }
 
             ForEach(Provider.allCases, id: \.self) { provider in
@@ -240,13 +262,12 @@ private struct QuotaPanel: View {
                 providerSection(provider, now: now)
             }
 
-            VStack(alignment: .leading, spacing: 10) {
-                Divider()
+            Divider()
+            VStack(alignment: .leading) {
                 Toggle("Quota Warm-up", isOn: Binding(
                     get: { model.autoWake },
                     set: { model.setAutoWake($0) }
                 ))
-                .frame(minHeight: 20)
                 .help("Sends one tiny prompt when a provider reports an idle five-hour window. Uses plan quota.")
 
                 HStack {
@@ -255,10 +276,10 @@ private struct QuotaPanel: View {
                         set: { model.setOpensAtLogin($0) }
                     ))
                     Spacer()
-                    Button("Quit") { NSApplication.shared.terminate(nil) }
+                    Button("Quit Quota Bar") { NSApplication.shared.terminate(nil) }
+                        .buttonStyle(.bordered)
                         .keyboardShortcut("q")
                 }
-                .frame(minHeight: 20)
 
                 if model.autoWake {
                     Text("Sends one tiny prompt per idle five-hour window using plan quota.")
@@ -324,7 +345,7 @@ private struct QuotaPanel: View {
     private func providerSection(_ provider: Provider, now: Date) -> some View {
         let report = model.reports[provider]
         return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 7) {
+            HStack(spacing: 8) {
                 QuotaRing(provider: provider, remaining: report?.remaining, stale: report?.problem != nil)
                 Text(provider.name).font(.subheadline.weight(.semibold))
             }
@@ -334,8 +355,9 @@ private struct QuotaPanel: View {
                     HStack {
                         Text(lane.title).foregroundStyle(.secondary)
                         Spacer()
-                        Text("\(remaining)% quota left").monospacedDigit().fontWeight(.medium)
+                        Text("\(remaining)% quota left").monospacedDigit().fontWeight(.semibold)
                     }
+                    .accessibilityElement(children: .combine)
                     GeometryReader { geometry in
                         ZStack(alignment: .leading) {
                             Capsule().fill(provider.tint.opacity(0.16))
