@@ -17,6 +17,10 @@ brew install --cask antigravity-cli
 
 Quota Bar reads usage from your existing sign-ins through the CodexBar CLI. Its menu bar app can stay closed. If Antigravity usage is missing, run `agy` in Terminal to sign in. Enable **Open at Login** in Quota Bar to start it automatically.
 
+## Limit Resets
+
+When Claude or Codex gives you a free limit reset, Quota Bar shows how many you have and when the next one expires. Click **Use…** to spend one: a confirmation dialog shows your current usage first, and Cancel is the default button. Quota Bar sends one request per confirmation, through your existing Claude Code or Codex CLI sign-in, and never uses a reset on its own. Antigravity doesn't offer resets.
+
 ## Quota Warm-up
 
 Off by default. When a supported five-hour window is idle, Quota Bar can send a short prompt through the signed-in provider CLI to start the clock. The prompt counts toward your quota.

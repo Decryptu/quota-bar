@@ -57,6 +57,7 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSPopoverDeleg
             popover.close()
         } else {
             model.reloadLoginItemStatus()
+            model.refreshIfNeededOnOpen()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             if popover.isShown { monitorOutsideClicks() }
         }
@@ -187,6 +188,102 @@ final class QuotaModel: ObservableObject {
     @Published private(set) var autoWake = UserDefaults.standard.bool(forKey: "autoWake")
     @Published private(set) var wakeMessages: [Provider: String] = [:]
     private var timer: Timer?
+    private var refreshOnNextOpen = false
+
+    func refreshIfNeededOnOpen() {
+        guard refreshOnNextOpen else { return }
+        refreshOnNextOpen = false
+        refresh()
+    }
+
+    func copyFix(_ fix: FixAction) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(fix.command, forType: .string)
+        refreshOnNextOpen = true
+    }
+
+    func runFix(_ fix: FixAction) {
+        refreshOnNextOpen = true
+        let files = FileManager.default
+        let scriptURL = files.temporaryDirectory
+            .appendingPathComponent("quota-bar-fix-\(UUID().uuidString).command")
+        let script = """
+        #!/bin/zsh
+        export PATH="$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+        rm -f "$0"
+        printf '\\033[1m$ %s\\033[0m\\n\\n' '\(fix.command)'
+        \(fix.command)
+        status=$?
+        echo ""
+        if [ $status -eq 0 ]; then
+          echo "Done! Return to Quota Bar to see your updated quota."
+        else
+          echo "Command exited with status $status."
+        fi
+        """
+        do {
+            try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+            try files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)
+            let terminal = URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
+            if files.fileExists(atPath: terminal.path) {
+                NSWorkspace.shared.open([scriptURL], withApplicationAt: terminal, configuration: NSWorkspace.OpenConfiguration())
+            } else {
+                NSWorkspace.shared.open(scriptURL)
+            }
+        } catch {
+            copyFix(fix)
+        }
+    }
+
+    @Published private(set) var redeeming: Set<Provider> = []
+
+    /// Asks for confirmation, then redeems one reset. Cancel is the default button,
+    /// so Return or Escape never uses a reset by accident.
+    func confirmAndRedeem(_ provider: Provider) {
+        guard !redeeming.contains(provider), let report = reports[provider],
+              let resets = report.resets, let id = resets.redeemID, resets.usableNow else { return }
+
+        let usage = [("5-hour", report.sessionLane), ("Weekly", report.lanes.first)]
+            .compactMap { label, lane in lane.map { "\(label): \(100 - $0.window.remaining)% used" } }
+            .joined(separator: " · ")
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Use your \(provider.name) reset now?"
+        alert.informativeText = """
+        This uses 1 \(resets.title ?? "reset") and can’t be undone. \
+        You have \(resets.available) available.
+        \(usage.isEmpty ? "" : "\nCurrent usage: \(usage)")
+        """
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Use Reset")
+        alert.buttons[1].hasDestructiveAction = true
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+
+        redeeming.insert(provider)
+        Task {
+            let outcome = switch provider {
+            case .claude: await ClaudeResets.redeem(grantID: id)
+            case .codex: await CodexResets.redeem(creditID: id)
+            case .antigravity: ResetOutcome.declined("Antigravity has no resets.")
+            }
+            redeeming.remove(provider)
+            let result = NSAlert()
+            switch outcome {
+            case .reset:
+                result.messageText = "\(provider.name) limits reset"
+                result.informativeText = "Your reset was used. Quota Bar is refreshing your quota."
+            case .declined(let message):
+                result.alertStyle = .warning
+                result.messageText = "\(provider.name) reset not used"
+                result.informativeText = message
+            }
+            refresh()
+            NSApp.activate(ignoringOtherApps: true)
+            result.runModal()
+        }
+    }
 
     func setAutoWake(_ enabled: Bool) {
         autoWake = enabled
@@ -239,6 +336,7 @@ final class QuotaModel: ObservableObject {
                     if let previous = reports[provider], result.problem != nil {
                         report.lanes = previous.lanes
                         report.sessionLane = previous.sessionLane
+                        report.resets = report.resets ?? previous.resets
                         report.updatedAt = previous.updatedAt
                     }
                     reports[provider] = report
@@ -276,6 +374,16 @@ final class QuotaModel: ObservableObject {
 private struct QuotaPanel: View {
     @ObservedObject var model: QuotaModel
     @State private var period = QuotaPeriod.week
+    @State private var copiedCommand: String?
+
+    private func copy(_ fix: FixAction) {
+        model.copyFix(fix)
+        copiedCommand = fix.command
+        let command = fix.command
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            if copiedCommand == command { copiedCommand = nil }
+        }
+    }
 
     var body: some View {
         TimelineView(.everyMinute) { context in
@@ -393,6 +501,37 @@ private struct QuotaPanel: View {
         .accessibilityHidden(true)
     }
 
+    private func resetRow(_ resets: ResetCredits, provider: Provider) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.counterclockwise.circle.fill")
+                .foregroundStyle(provider.tint)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(resets.available == 1 ? "1 reset available" : "\(resets.available) resets available")
+                    .font(.callout.weight(.medium))
+                if let expiry = resets.expiresAt {
+                    Text("Expires \(expiry.formatted(.dateTime.month(.abbreviated).day().hour().minute()))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if model.redeeming.contains(provider) {
+                ProgressView().controlSize(.small)
+            } else if resets.redeemID != nil {
+                Button("Use…") { model.confirmAndRedeem(provider) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(!resets.usableNow)
+                    .help(resets.usableNow
+                          ? "Use \(resets.title ?? "a reset") after confirming"
+                          : "This reset can’t be used right now")
+            }
+        }
+        .padding(8)
+        .background(provider.tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+        .accessibilityElement(children: .combine)
+    }
+
     private func providerSection(_ provider: Provider, now: Date) -> some View {
         let report = model.reports[provider]
         let lanes = report?.lanes(for: period) ?? []
@@ -441,11 +580,43 @@ private struct QuotaPanel: View {
                 }
                 .font(.callout)
             }
+            if let resets = report?.resets, resets.available > 0 {
+                resetRow(resets, provider: provider)
+            }
             if model.autoWake, let message = model.wakeMessages[provider] {
                 Text(message).font(.caption).foregroundStyle(.secondary)
             }
             if let problem = report?.problem {
                 Text(problem).font(.caption).foregroundStyle(.secondary)
+                if let fix = report?.fix {
+                    HStack(spacing: 6) {
+                        HStack(spacing: 6) {
+                            Text(fix.command)
+                                .font(.system(.caption, design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .textSelection(.enabled)
+                            Spacer(minLength: 0)
+                            Button { copy(fix) } label: {
+                                Image(systemName: copiedCommand == fix.command ? "checkmark" : "doc.on.doc")
+                                    .font(.caption2)
+                                    .foregroundStyle(copiedCommand == fix.command ? .green : .secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help(copiedCommand == fix.command ? "Copied" : "Copy “\(fix.command)”")
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 5))
+
+                        Button { model.runFix(fix) } label: {
+                            Label(fix.title, systemImage: "terminal")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help("Run “\(fix.command)” in Terminal")
+                    }
+                }
                 if !lanes.isEmpty, let date = report?.updatedAt {
                     Text("Last reading \(date.formatted(date: .abbreviated, time: .shortened))")
                         .font(.caption).foregroundStyle(.secondary)

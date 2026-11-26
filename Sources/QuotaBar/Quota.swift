@@ -18,6 +18,42 @@ enum Provider: String, CaseIterable, Sendable {
         case .antigravity: "sparkle"
         }
     }
+
+    var signInFix: FixAction {
+        switch self {
+        case .claude: FixAction(title: "Sign in", command: "claude auth login")
+        case .codex: FixAction(title: "Sign in", command: "codex login")
+        case .antigravity: FixAction(title: "Sign in", command: "agy")
+        }
+    }
+}
+
+struct ResetCredits: Sendable, Equatable {
+    let available: Int
+    let expiresAt: Date?
+    let title: String?
+    /// The grant (Claude) or credit (Codex) to redeem next.
+    var redeemID: String?
+    var usableNow = true
+}
+
+enum ResetOutcome: Sendable {
+    case reset
+    case declined(String)
+}
+
+func parseISODate(_ string: String?) -> Date? {
+    guard let string else { return nil }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions.insert(.withFractionalSeconds)
+    if let date = formatter.date(from: string) { return date }
+    formatter.formatOptions.remove(.withFractionalSeconds)
+    return formatter.date(from: string)
+}
+
+struct FixAction: Sendable, Equatable {
+    let title: String
+    let command: String
 }
 
 struct Window: Decodable, Sendable {
@@ -28,14 +64,7 @@ struct Window: Decodable, Sendable {
 
     var remaining: Int { Int((100 - min(max(usedPercent, 0), 100)).rounded()) }
 
-    var reset: Date? {
-        guard let resetsAt else { return nil }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions.insert(.withFractionalSeconds)
-        if let date = formatter.date(from: resetsAt) { return date }
-        formatter.formatOptions.remove(.withFractionalSeconds)
-        return formatter.date(from: resetsAt)
-    }
+    var reset: Date? { parseISODate(resetsAt) }
 }
 
 enum QuotaPeriod: String, CaseIterable {
@@ -58,6 +87,8 @@ struct Report: Sendable {
     var lanes: [Lane] = []
     var sessionLane: Lane?
     var problem: String?
+    var fix: FixAction?
+    var resets: ResetCredits?
     var updatedAt: Date?
     var idleSession = false
     var activeSession = false
@@ -79,24 +110,74 @@ private struct Payload: Decodable {
             let usageKnown: Bool?
         }
 
+        struct CodexResetCredits: Decodable {
+            struct Credit: Decodable {
+                let id: String?
+                let status: String?
+                let title: String?
+                let expires_at: String?
+            }
+            let credits: [Credit]?
+        }
+
         let primary: Window?
         let secondary: Window?
         let extraRateWindows: [Extra]?
+        let codexResetCredits: CodexResetCredits?
+    }
+
+    struct ResetSummary: Decodable {
+        let available: Int?
+        let nextExpiresAt: String?
+    }
+
+    struct FetchError: Decodable {
+        let message: String?
+        let kind: String?
     }
 
     let provider: String
     let usage: Usage?
     let source: String?
+    let error: FetchError?
+    let resetCredits: ResetSummary?
+
+    var resets: ResetCredits? {
+        let available = (usage?.codexResetCredits?.credits ?? []).filter { $0.status == "available" }
+        let count = resetCredits?.available ?? available.count
+        guard count > 0 else { return nil }
+        let soonest = available.min { (parseISODate($0.expires_at) ?? .distantFuture) < (parseISODate($1.expires_at) ?? .distantFuture) }
+        return ResetCredits(
+            available: count,
+            expiresAt: parseISODate(resetCredits?.nextExpiresAt) ?? parseISODate(soonest?.expires_at),
+            title: soonest?.title,
+            redeemID: soonest?.id
+        )
+    }
 }
 
 enum QuotaReader {
+    private static func isAuthError(_ message: String?) -> Bool {
+        guard let message, !message.isEmpty else { return true }
+        let lower = message.lowercased()
+        let markers = [
+            "cookie", "session", "oauth", "credential", "auth",
+            "login", "logged in", "sign in", "signed in", "unauthorized", "token", "401"
+        ]
+        return markers.contains { lower.contains($0) }
+    }
+
     static func decode(_ data: Data, provider: Provider) throws -> Report {
         let decoder = JSONDecoder()
         let payloads = (try? decoder.decode([Payload].self, from: data))
             ?? (try? decoder.decode(Payload.self, from: data)).map { [$0] }
-        guard let payload = payloads?.first(where: { $0.provider == provider.rawValue }),
-              let usage = payload.usage else {
-            return Report(problem: "Couldn’t fetch quota. Check sign-in and connection.")
+        let payload = payloads?.first(where: { $0.provider == provider.rawValue })
+        guard let payload, let usage = payload.usage else {
+            let message = payload?.error?.message?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if isAuthError(message) {
+                return Report(problem: "\(provider.name) CLI isn’t signed in.", fix: provider.signInFix)
+            }
+            return Report(problem: message ?? "Couldn’t fetch quota. Check sign-in and connection.")
         }
         let lanes: [Lane]
         if provider == .antigravity {
@@ -141,6 +222,7 @@ enum QuotaReader {
         return Report(
             lanes: lanes,
             sessionLane: session.map { Lane(title: provider == .antigravity ? "Gemini" : "All models", window: $0) },
+            resets: payload.resets,
             updatedAt: lanes.isEmpty && session == nil ? nil : Date(),
             idleSession: idleSession && !lanes.isEmpty && (lanes.first?.window.usedPercent ?? 100) < 100,
             activeSession: wakeSession?.reset.map { $0 > Date() } ?? false
@@ -148,6 +230,16 @@ enum QuotaReader {
     }
 
     static func fetch(_ provider: Provider) async -> Report {
+        guard provider == .claude else { return await fetchUsage(provider) }
+        // CodexBar's Claude CLI source doesn't include banked resets, so read them separately.
+        async let usage = fetchUsage(provider)
+        async let resets = ClaudeResets.fetch()
+        var report = await usage
+        if report.resets == nil { report.resets = await resets }
+        return report
+    }
+
+    private static func fetchUsage(_ provider: Provider) async -> Report {
         await Task.detached(priority: .utility) {
             let fileManager = FileManager.default
             let candidates = [
@@ -155,7 +247,10 @@ enum QuotaReader {
                 "/opt/homebrew/bin/codexbar", "/usr/local/bin/codexbar"
             ]
             guard let executable = candidates.first(where: fileManager.isExecutableFile(atPath:)) else {
-                return Report(problem: "Install the CodexBar helper to fetch quota.")
+                return Report(
+                    problem: "CodexBar helper isn’t installed.",
+                    fix: FixAction(title: "Install", command: "brew install --cask codexbar")
+                )
             }
             let process = Process()
             process.executableURL = URL(fileURLWithPath: executable)
