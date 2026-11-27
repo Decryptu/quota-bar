@@ -69,9 +69,9 @@ enum QuotaWake {
             guard models.success, String(decoding: models.output, as: UTF8.self)
                 .split(whereSeparator: \.isNewline).contains(where: { $0.hasPrefix(model + "\t") })
             else { return "Gemini Flash unavailable for warm-up. Check agy sign-in." }
-            let settings = #"{"useG1Credits":"off","toolPermission":"strict","permissions":{"deny":["read_file(*)","write_file(*)","read_url(*)","execute_url(*)","command(*)","mcp(*)"]}}"#
+            let settings = #"{"useG1Credits":false,"toolPermission":"strict","permissions":{"deny":["read_file(*)","write_file(*)","read_url(*)","execute_url(*)","command(*)","mcp(*)"]}}"#
             arguments = ["--sandbox", "--disable-slash-commands", "--settings", settings,
-                         "--model", model, "--print-timeout", "30", "-p", prompt]
+                         "--model", model, "--print-timeout", "30s", "-p", prompt]
         }
         let result = try run(executable, arguments, directory, environment)
         return result.success && String(decoding: result.output, as: UTF8.self)

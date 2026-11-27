@@ -215,17 +215,21 @@ enum QuotaReader {
         default:
             wakeSession = nil
         }
+        // Claude reports an idle window with no reset. Codex and Antigravity instead report a
+        // rolling reset of "now + 5h" that moves forward on every poll until a prompt starts it.
+        let now = Date()
+        let rollingReset = wakeSession?.reset.map { $0.timeIntervalSince(now) > 300 * 60 - 180 } ?? false
         let idleSession = wakeSession?.windowMinutes == 300
             && wakeSession?.usedPercent == 0
-            && wakeSession?.resetsAt == nil
-            && wakeSession?.resetDescription?.isEmpty != false
+            && (rollingReset
+                || (wakeSession?.resetsAt == nil && wakeSession?.resetDescription?.isEmpty != false))
         return Report(
             lanes: lanes,
             sessionLane: session.map { Lane(title: provider == .antigravity ? "Gemini" : "All models", window: $0) },
             resets: payload.resets,
             updatedAt: lanes.isEmpty && session == nil ? nil : Date(),
             idleSession: idleSession && !lanes.isEmpty && (lanes.first?.window.usedPercent ?? 100) < 100,
-            activeSession: wakeSession?.reset.map { $0 > Date() } ?? false
+            activeSession: !idleSession && (wakeSession?.reset.map { $0 > now } ?? false)
         )
     }
 
